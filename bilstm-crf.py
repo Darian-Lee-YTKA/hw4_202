@@ -25,37 +25,39 @@ def log_sum_exp(vec):
         torch.log(torch.sum(torch.exp(vec - max_score_broadcast)))
 class BiLSTM_CRF(nn.Module):
 
-    def __init__(self, vocab_size, tag_to_ix, embedding_dim, hidden_dim):
+    def __init__(self, vocab_size, tag_to_ix, embedding_dim, hidden_dim, batch_size):
         super(BiLSTM_CRF, self).__init__()
         self.embedding_dim = embedding_dim
         self.hidden_dim = hidden_dim
         self.vocab_size = vocab_size
         self.tag_to_ix = tag_to_ix
         self.tagset_size = len(tag_to_ix)
+        self.batch_size
 
         self.word_embeds = nn.Embedding(vocab_size, embedding_dim) # normal word embed
         self.lstm = nn.LSTM(embedding_dim, hidden_dim // 2,
-                            num_layers=1, bidirectional=True) # normal bilstm with batch false
-        # the input shape will be seq_len, batchsize (1), embed dim
+                            num_layers=1, bidirectional=True, batch_first = True) # normal bilstm with batch false
+        # the input shape will be seq_len, batchsize, embed dim
+        # I added batch first = True. thus it will be batch_size, seq_len, embed_dim
 
         # Maps the output of the LSTM into tag space.
-        self.hidden2tag = nn.Linear(hidden_dim, self.tagset_size)
+        self.hidden2tag = nn.Linear(hidden_dim, self.tagset_size) # automatically handles batch size due to projection
 
         # Matrix of transition parameters.  Entry i,j is the score of
         # transitioning *to* i *from* j.
         self.transitions = nn.Parameter(    # nn.parameters means that these parameters will be updated through gradient descent
-            torch.randn(self.tagset_size, self.tagset_size))
+            torch.randn(self.tagset_size, self.tagset_size)) #independent of batch
 
         # These two statements enforce the constraint that we never transfer
         # to the start tag and we never transfer from the stop tag
-        self.transitions.data[tag_to_ix[START_TAG], :] = -10000
-        self.transitions.data[:, tag_to_ix[STOP_TAG]] = -10000
+        self.transitions.data[tag_to_ix[START_TAG], :] = -10000 # independent of batch
+        self.transitions.data[:, tag_to_ix[STOP_TAG]] = -10000 # independent of batch
 
         self.hidden = self.init_hidden()
 
     def init_hidden(self):
         return (torch.randn(2, 1, self.hidden_dim // 2),
-                torch.randn(2, 1, self.hidden_dim // 2))
+                torch.randn(2, 1, self.hidden_dim // 2)) # intialize for random weights. Independent of batching
 
     def _forward_alg(self, feats):
         # Do the forward algorithm to compute the partition function
@@ -90,12 +92,12 @@ class BiLSTM_CRF(nn.Module):
 
     def _get_lstm_features(self, sentence):
         self.hidden = self.init_hidden()
-        embeds = self.word_embeds(sentence).view(len(sentence), 1, -1)
-        # self.word_embeds(sentence) = seq_length,embedding_dim
-        #self.word_embeds(sentence).view(len(sentence), 1, -1) = seq_length, 1, embedding_dim
-        lstm_out, self.hidden = self.lstm(embeds, self.hidden) # seq len, 1, hidden dim
-        lstm_out = lstm_out.view(len(sentence), self.hidden_dim) #seq len, hidden_dim
-        lstm_feats = self.hidden2tag(lstm_out) # tagset size
+        embeds = self.word_embeds(sentence)
+        # self.word_embeds(sentence) = batch_size, seq_length,embedding_dim
+
+        lstm_out, self.hidden = self.lstm(embeds, self.hidden) # batch_size, seq len, hidden dim
+
+        lstm_feats = self.hidden2tag(lstm_out) # batch_size, tagset size
         return lstm_feats
 
     def _score_sentence(self, feats, tags):
@@ -112,7 +114,7 @@ class BiLSTM_CRF(nn.Module):
         backpointers = []
 
         # Initialize the viterbi variables in log space
-        init_vvars = torch.full((1, self.tagset_size), -10000.)
+        init_vvars = torch.full((self.batch_size, self.tagset_size), -10000.)
         init_vvars[0][self.tag_to_ix[START_TAG]] = 0
 
         # forward_var at step i holds the viterbi variables for step i-1
