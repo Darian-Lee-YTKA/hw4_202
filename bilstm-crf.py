@@ -33,16 +33,17 @@ class BiLSTM_CRF(nn.Module):
         self.tag_to_ix = tag_to_ix
         self.tagset_size = len(tag_to_ix)
 
-        self.word_embeds = nn.Embedding(vocab_size, embedding_dim)
+        self.word_embeds = nn.Embedding(vocab_size, embedding_dim) # normal word embed
         self.lstm = nn.LSTM(embedding_dim, hidden_dim // 2,
-                            num_layers=1, bidirectional=True)
+                            num_layers=1, bidirectional=True) # normal bilstm with batch false
+        # the input shape will be seq_len, batchsize (1), embed dim
 
         # Maps the output of the LSTM into tag space.
         self.hidden2tag = nn.Linear(hidden_dim, self.tagset_size)
 
         # Matrix of transition parameters.  Entry i,j is the score of
         # transitioning *to* i *from* j.
-        self.transitions = nn.Parameter(
+        self.transitions = nn.Parameter(    # nn.parameters means that these parameters will be updated through gradient descent
             torch.randn(self.tagset_size, self.tagset_size))
 
         # These two statements enforce the constraint that we never transfer
@@ -90,9 +91,11 @@ class BiLSTM_CRF(nn.Module):
     def _get_lstm_features(self, sentence):
         self.hidden = self.init_hidden()
         embeds = self.word_embeds(sentence).view(len(sentence), 1, -1)
-        lstm_out, self.hidden = self.lstm(embeds, self.hidden)
-        lstm_out = lstm_out.view(len(sentence), self.hidden_dim)
-        lstm_feats = self.hidden2tag(lstm_out)
+        # self.word_embeds(sentence) = seq_length,embedding_dim
+        #self.word_embeds(sentence).view(len(sentence), 1, -1) = seq_length, 1, embedding_dim
+        lstm_out, self.hidden = self.lstm(embeds, self.hidden) # seq len, 1, hidden dim
+        lstm_out = lstm_out.view(len(sentence), self.hidden_dim) #seq len, hidden_dim
+        lstm_feats = self.hidden2tag(lstm_out) # tagset size
         return lstm_feats
 
     def _score_sentence(self, feats, tags):
