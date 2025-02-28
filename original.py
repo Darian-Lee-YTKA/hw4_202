@@ -5,7 +5,6 @@ import torch.optim as optim
 import pandas as pd
 torch.manual_seed(12)
 from torch.utils.data import Dataset
-
 def argmax(vec):
     # return the argmax as a python int
     _, idx = torch.max(vec, 1)
@@ -25,45 +24,48 @@ def log_sum_exp(vec):
         torch.log(torch.sum(torch.exp(vec - max_score_broadcast)))
 class BiLSTM_CRF(nn.Module):
 
-    def __init__(self, vocab_size, tag_to_ix, embedding_dim, hidden_dim, batch_size):
+    def __init__(self, vocab_size, tag_to_ix, embedding_dim, hidden_dim):
         super(BiLSTM_CRF, self).__init__()
         self.embedding_dim = embedding_dim
         self.hidden_dim = hidden_dim
         self.vocab_size = vocab_size
         self.tag_to_ix = tag_to_ix
         self.tagset_size = len(tag_to_ix)
-        self.batch_size
 
-        self.word_embeds = nn.Embedding(vocab_size, embedding_dim) # normal word embed
+        self.word_embeds = nn.Embedding(vocab_size, embedding_dim)
         self.lstm = nn.LSTM(embedding_dim, hidden_dim // 2,
-                            num_layers=1, bidirectional=True, batch_first = True) # normal bilstm with batch false
-        # the input shape will be seq_len, batchsize, embed dim
-        # I added batch first = True. thus it will be batch_size, seq_len, embed_dim
+                            num_layers=1, bidirectional=True)
 
         # Maps the output of the LSTM into tag space.
-        self.hidden2tag = nn.Linear(hidden_dim, self.tagset_size) # automatically handles batch size due to projection
+        self.hidden2tag = nn.Linear(hidden_dim, self.tagset_size)
+
+
 
         # Matrix of transition parameters.  Entry i,j is the score of
         # transitioning *to* i *from* j.
-        self.transitions = nn.Parameter(    # nn.parameters means that these parameters will be updated through gradient descent
-            torch.randn(self.tagset_size, self.tagset_size)) #independent of batch
+        self.transitions = nn.Parameter(
+            torch.randn(self.tagset_size, self.tagset_size))
 
         # These two statements enforce the constraint that we never transfer
         # to the start tag and we never transfer from the stop tag
-        self.transitions.data[tag_to_ix[START_TAG], :] = -10000 # independent of batch
-        self.transitions.data[:, tag_to_ix[STOP_TAG]] = -10000 # independent of batch
+        self.transitions.data[tag_to_ix[START_TAG], :] = -10000
+        self.transitions.data[:, tag_to_ix[STOP_TAG]] = -10000
 
         self.hidden = self.init_hidden()
 
     def init_hidden(self):
         return (torch.randn(2, 1, self.hidden_dim // 2),
-                torch.randn(2, 1, self.hidden_dim // 2)) # intialize for random weights. Independent of batching
+                torch.randn(2, 1, self.hidden_dim // 2))
 
     def _forward_alg(self, feats):
+        print("inside forward algo")
         # Do the forward algorithm to compute the partition function
         init_alphas = torch.full((1, self.tagset_size), -10000.)
+        print(init_alphas)
         # START_TAG has all of the score.
         init_alphas[0][self.tag_to_ix[START_TAG]] = 0.
+        print(init_alphas)
+        print(feats)
 
         # Wrap in a variable so that we will get automatic backprop
         forward_var = init_alphas
@@ -74,49 +76,87 @@ class BiLSTM_CRF(nn.Module):
             for next_tag in range(self.tagset_size):
                 # broadcast the emission score: it is the same regardless of
                 # the previous tag
-                print("shape feat next_tag")
+                print("shape feat next_tag, then actual feat next tag")
                 print(feat[next_tag].shape)
+                print(feat[next_tag]) #
                 emit_score = feat[next_tag].view(
                     1, -1).expand(1, self.tagset_size) # broadcasts the scalar emit score to be the size of the tag_set
+                # we do this because the emission score is the same regardless of the previous tag
+                print("shape emit score")
+                print(emit_score.shape)
+                print(emit_score)
                 # the ith entry of trans_score is the score of transitioning to
                 # next_tag from i
+
                 trans_score = self.transitions[next_tag].view(1, -1)
+                print(trans_score)
                 # The ith entry of next_tag_var is the value for the
                 # edge (i -> next_tag) before we do log-sum-exp
+
                 next_tag_var = forward_var + trans_score + emit_score
+                print("next tag var shape")
+                print(next_tag_var.shape)
+                print("next tag var")
+                print(next_tag_var)
                 # The forward variable for this tag is log-sum-exp of all the
                 # scores.
-                alphas_t.append(log_sum_exp(next_tag_var).view(1))
+                alphas_t.append(log_sum_exp(next_tag_var).view(1)) # this is the total sum of getting to the next point
+                print("alpha_ts.shape")
+                print(len(alphas_t))
+                print("printing alpha ts")
+                print(alphas_t)
+            print("printing alpha ts")
+            print(alphas_t)
+            print("printing torch.cat(alphas_t)")
+            print(torch.cat(alphas_t))
+
             forward_var = torch.cat(alphas_t).view(1, -1)
+            print("forward var shape")
+            print(forward_var.shape)
+            print("printing forward var")
+            print(forward_var)
         terminal_var = forward_var + self.transitions[self.tag_to_ix[STOP_TAG]]
+
         alpha = log_sum_exp(terminal_var)
         return alpha
 
     def _get_lstm_features(self, sentence):
+        print("inside get lstm features")
         self.hidden = self.init_hidden()
-        embeds = self.word_embeds(sentence)
-        # self.word_embeds(sentence) = batch_size, seq_length,embedding_dim
-
-        lstm_out, self.hidden = self.lstm(embeds, self.hidden) # batch_size, seq len, hidden dim
-
-        lstm_feats = self.hidden2tag(lstm_out) # batch_size, tagset size
+        embeds = self.word_embeds(sentence).view(len(sentence), 1, -1)
+        lstm_out, self.hidden = self.lstm(embeds, self.hidden)
+        print("shape lstm out")
+        print(lstm_out.shape)
+        lstm_out = lstm_out.view(len(sentence), self.hidden_dim)
+        print("shape lstm out")
+        print(lstm_out.shape)
+        lstm_feats = self.hidden2tag(lstm_out)
+        print("shape lstm feats")
+        print(lstm_feats.shape)
+        print("exiting get lstm features")
         return lstm_feats
 
     def _score_sentence(self, feats, tags):
+        print("inside score sentenc")
         # Gives the score of a provided tag sequence
         score = torch.zeros(1)
         tags = torch.cat([torch.tensor([self.tag_to_ix[START_TAG]], dtype=torch.long), tags])
+        print("printing tags in score function")
+        print(tags)
         for i, feat in enumerate(feats):
             score = score + \
                 self.transitions[tags[i + 1], tags[i]] + feat[tags[i + 1]]
+            print("printing score inside score function")
+            print(score)
         score = score + self.transitions[self.tag_to_ix[STOP_TAG], tags[-1]]
         return score
 
     def _viterbi_decode(self, feats):
         backpointers = []
+        print("inside viterbi!")
 
         # Initialize the viterbi variables in log space
-        init_vvars = torch.full((self.batch_size, self.tagset_size), -10000.)
+        init_vvars = torch.full((1, self.tagset_size), -10000.)
         init_vvars[0][self.tag_to_ix[START_TAG]] = 0
 
         # forward_var at step i holds the viterbi variables for step i-1
@@ -157,9 +197,15 @@ class BiLSTM_CRF(nn.Module):
         return path_score, best_path
 
     def neg_log_likelihood(self, sentence, tags):
+        print("inside neg log like")
+        print(sentence)
         feats = self._get_lstm_features(sentence)
         forward_score = self._forward_alg(feats)
+        print("printing forward score in neg log lik")
+        print(forward_score)
         gold_score = self._score_sentence(feats, tags)
+        print("printing gold score in neg log like")
+        print(gold_score)
         return forward_score - gold_score
 
     def forward(self, sentence):  # dont confuse this with _forward_alg above.
@@ -169,180 +215,54 @@ class BiLSTM_CRF(nn.Module):
         # Find the best path, given the features.
         score, tag_seq = self._viterbi_decode(lstm_feats)
         return score, tag_seq
-
 START_TAG = "<START>"
 STOP_TAG = "<STOP>"
-EMBEDDING_DIM = 128
-HIDDEN_DIM = 128
+EMBEDDING_DIM = 5
+HIDDEN_DIM = 4
 
+# Make up some training data
+training_data = [(
+    "the wall street journal reported today that apple corporation made money".split(),
+    "B I I I O O O B I O O".split()
+), (
+    "georgia tech is a university in georgia".split(),
+    "B I O O O O B".split()
+)]
 
-
-
-def get_data_from_iob(path):
-
-    with open(path, 'r') as file:
-        iob_data = file.read()
-
-
-    sentences = iob_data.strip().split('\n\n') # sentences in data split by 2 lines
-
-    data = []
-
-    for sentence in sentences:
-
-        tokens_tags = sentence.split('\n') # gets all the tokens in the sentence
-        tokens = []
-        tags = []
-
-        for token_tag in tokens_tags:
-
-            token, tag = token_tag.split('\t')
-
-            tokens.append(token)
-            tags.append(tag)
-
-
-        data.append([tokens, tags])
-
-
-    df = pd.DataFrame(data, columns=['tokens', 'tags'])
-
-
-    #df.to_csv('iob_to_csv.csv', index=False)
-
-    return df
-
-train_df = get_data_from_iob("A2-data/train")
-dev_df = get_data_from_iob("A2-data/dev.answers")
-test = get_data_from_iob("A2-data/test.answers")
 word_to_ix = {}
+for sentence, tags in training_data:
+    for word in sentence:
+        if word not in word_to_ix:
+            word_to_ix[word] = len(word_to_ix)
 
+tag_to_ix = {"B": 0, "I": 1, "O": 2, START_TAG: 3, STOP_TAG: 4}
 
-
-class IOBDataset(Dataset):
-    def __init__(self):
-        super().__init__()
-        self.vocab = {"PAD": 0, "UNK": 1}
-        self.tag_vocab = {"PAD": 0, "UNK": 1}
-        self.x = []
-        self.y = []
-        self.inverse_vocab = {}
-        self.inverse_tag_vocab = {}
-    def build_vocab(self, df):
-
-        for row in df.itertuples():
-            print(row)
-            for token in row.tokens:
-                if token not in self.vocab:
-                    print(token)
-                    self.vocab[token] = len(self.vocab)
-            for tag in row.tags:
-                if tag not in self.tag_vocab:
-                    self.tag_vocab[tag] = len(self.tag_vocab)
-        #print(self.vocab)
-        #print(self.tag_vocab)
-        self.inverse_vocab = {value: key for key, value in self.vocab.items()}
-        self.inverse_tag_vocab = {value: key for key, value in self.tag_vocab.items()}
-
-
-    def load_vocab(self, vocab, tag_vocab):
-        self.vocab = vocab
-        self.inverse_vocab = {value: key for (key,value) in vocab.items()}
-        self.tag_vocab = tag_vocab
-        self.inverse_tag_vocab = {value: key for (key, value) in tag_vocab.items()}
-
-
-    def encode_data(self, df):
-        for row in df.itertuples():
-            row_x = []
-            row_y = []
-            for token in row.tokens:
-                row_x.append(self.vocab.get(token, 1))
-            for tag in row.tags:
-                row_y.append(self.tag_vocab.get(tag, 1))
-            self.x.append(torch.tensor(row_x))
-            self.y.append(torch.tensor(row_y))
-    def decode_data(self, idx):
-        tokens = ""
-        tags = []
-
-        for token in self.x[idx]:
-            tokens += self.inverse_vocab.get(token.item(), 1) + " "
-        for tag in self.y[idx]:
-
-            tags.append(self.inverse_tag_vocab.get(tag.item(), 1))
-        return tokens, tags
-    def check_work(self, idx):
-        if idx > len(self.x):
-            idx = len(self.x) -1
-        tokens, tags = self.decode_data(idx)
-        print(tokens)
-        print(tags)
-
-
-    def __len__(self):
-
-        return len(self.vocab)
-
-    def __getitem__(self, idx):
-
-        return self.x[idx], self.y[idx]
-
-
-train_dataset = IOBDataset()
-train_dataset.build_vocab(train_df)
-
-train_dataset.encode_data(train_df)
-train_dataset.check_work(500)
-
-dev_dataset = IOBDataset()
-dev_dataset.build_vocab(dev_df)
-
-dev_dataset.encode_data(dev_df)
-dev_dataset.check_work(500)
-
-test_dataset = IOBDataset()
-test_dataset.build_vocab(dev_df)
-test_dataset.encode_data(dev_df)
-test_dataset.check_work(500)
-
-
-def collate_fn(batch):
-
-    inputs, labels = zip(*batch)
-
-    max_len = max(len(seq) for seq in inputs)
-
-    padded_inputs = [seq + [0] * (max_len - len(seq)) for seq in inputs]
-
-    padded_inputs = torch.tensor(padded_inputs, dtype=torch.long)
-    labels = torch.tensor(labels, dtype=torch.long)
-
-    return padded_inputs, labels
-
-
-
-model = BiLSTM_CRF(len(word_to_ix), len(train_dataset), EMBEDDING_DIM, HIDDEN_DIM)
+model = BiLSTM_CRF(len(word_to_ix), tag_to_ix, EMBEDDING_DIM, HIDDEN_DIM)
 optimizer = optim.SGD(model.parameters(), lr=0.01, weight_decay=1e-4)
 
 # Check predictions before training
-
-
+'''with torch.no_grad():
+    precheck_sent = prepare_sequence(training_data[0][0], word_to_ix)
+    precheck_tags = torch.tensor([tag_to_ix[t] for t in training_data[0][1]], dtype=torch.long)
+    print(model(precheck_sent))'''
 
 # Make sure prepare_sequence from earlier in the LSTM section is loaded
 for epoch in range(
-        10):
-    for sentence, tags in batch:
+        1):  # again, normally you would NOT do 300 epochs, it is toy data
+    for sentence, tags in training_data:
         # Step 1. Remember that Pytorch accumulates gradients.
         # We need to clear them out before each instance
         model.zero_grad()
 
         # Step 2. Get our inputs ready for the network, that is,
         # turn them into Tensors of word indices.
+        print("about to run prepare_sequence")
         sentence_in = prepare_sequence(sentence, word_to_ix)
+        print("preparing targets")
         targets = torch.tensor([tag_to_ix[t] for t in tags], dtype=torch.long)
 
         # Step 3. Run our forward pass.
+        print("running neg log like")
         loss = model.neg_log_likelihood(sentence_in, targets)
 
         # Step 4. Compute the loss, gradients, and update the parameters by
@@ -350,8 +270,8 @@ for epoch in range(
         loss.backward()
         optimizer.step()
 
-# Check predictions after training
+'''# Check predictions after training
 with torch.no_grad():
     precheck_sent = prepare_sequence(training_data[0][0], word_to_ix)
-    print(model(precheck_sent))
-# We got it!'''
+    print(model(precheck_sent))'''
+# We got it!
