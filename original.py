@@ -18,10 +18,19 @@ def prepare_sequence(seq, to_ix):
 
 # Compute log sum exp in a numerically stable way for the forward algorithm
 def log_sum_exp(vec):
-    max_score = vec[0, argmax(vec)]
-    max_score_broadcast = max_score.view(1, -1).expand(1, vec.size()[1])
-    return max_score + \
-        torch.log(torch.sum(torch.exp(vec - max_score_broadcast)))
+    vec = torch.tensor([
+        [1.0, 2.0],
+        [3.0, 4.0],
+        [5.0, 6.0]
+    ])
+    print("vec: ", vec)
+    max_score, max_indices = torch.max(vec, dim=-1, keepdim=True)
+    print("max score: ", max_score)
+    max_score_broadcast = max_score.expand_as(vec)
+    print("max score broadcast: ", max_score_broadcast)
+
+    print(max_score.squeeze(-1) + torch.log(torch.sum(torch.exp(vec - max_score_broadcast), dim=-1)))
+    return max_score.squeeze(-1) + torch.log(torch.sum(torch.exp(vec - max_score_broadcast), dim=-1)) # we are going out of logspace temporarily because log(a+b) =/ log(a) + log(b)
 class BiLSTM_CRF(nn.Module):
 
     def __init__(self, vocab_size, tag_to_ix, embedding_dim, hidden_dim):
@@ -104,6 +113,10 @@ class BiLSTM_CRF(nn.Module):
                 print(next_tag_var)
                 # The forward variable for this tag is log-sum-exp of all the
                 # scores.
+                print("shape before view:")
+                print(log_sum_exp(next_tag_var))
+                print("shape after view")
+                print(log_sum_exp(next_tag_var).view(1))
                 alphas_t.append(log_sum_exp(next_tag_var).view(1)) # this is the total sum of getting to the next point
                 print("alpha_ts.shape")
                 print(len(alphas_t))

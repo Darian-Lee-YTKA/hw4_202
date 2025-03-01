@@ -19,10 +19,16 @@ def prepare_sequence(seq, to_ix):
 
 # Compute log sum exp in a numerically stable way for the forward algorithm
 def log_sum_exp(vec):
-    max_score = vec[0, argmax(vec)]
-    max_score_broadcast = max_score.view(1, -1).expand(1, vec.size()[1])
-    return max_score + \
-        torch.log(torch.sum(torch.exp(vec - max_score_broadcast)))
+    print("vec")
+    print(vec.shape)
+    print("vec: ", vec)
+    max_score, max_indices = torch.max(vec, dim=-1, keepdim=True)
+    print("max score: ", max_score)
+    max_score_broadcast = max_score.expand_as(vec)
+    print("max score broadcast: ", max_score_broadcast)
+
+
+    return (max_score.squeeze(-1) + torch.log(torch.sum(torch.exp(vec - max_score_broadcast), dim=-1))).unsqueeze(-1)
 class BiLSTM_CRF(nn.Module):
 
     def __init__(self, vocab_size, tag_to_ix, embedding_dim, hidden_dim, batch_size):
@@ -82,7 +88,7 @@ class BiLSTM_CRF(nn.Module):
         batch_size, seq_len, tag_dim = feats.shape
         for sequence_token in range(seq_len):
             feat = feats[:, sequence_token, :] # processing across all batches
-            alphas_t = []  # The forward tensors at this timestep
+            alphas_t = None  # The forward tensors at this timestep
             for next_tag in range(self.tagset_size):
                 # broadcast the emission score: it is the same regardless of
                 # the previous tag
@@ -113,17 +119,21 @@ class BiLSTM_CRF(nn.Module):
                 print(next_tag_var)
                 # The forward variable for this tag is log-sum-exp of all the
                 # scores.
-                alphas_t.append(log_sum_exp(next_tag_var).view(1))  # this is the total sum of getting to the next point
+
+                log_sum_next_var = log_sum_exp(next_tag_var)
+                print("log sum next var")
+                print(log_sum_next_var.shape,log_sum_next_var)
+                if alphas_t is None:
+                    alphas_t = log_sum_next_var
+                else:
+                    alphas_t = torch.cat((alphas_t, log_sum_next_var), dim=1)  # this is the total sum of getting to the next point
                 print("alpha_ts.shape")
-                print(len(alphas_t))
+                print(alphas_t.shape)
                 print("printing alpha ts")
                 print(alphas_t)
-            print("printing alpha ts")
-            print(alphas_t)
-            print("printing torch.cat(alphas_t)")
-            print(torch.cat(alphas_t))
 
-            forward_var = torch.cat(alphas_t).view(1, -1)
+
+            forward_var = alphas_t # its already in the proper tensor so we dont need to worry about this
             print("forward var shape")
             print(forward_var.shape)
             print("printing forward var")
@@ -131,6 +141,8 @@ class BiLSTM_CRF(nn.Module):
         terminal_var = forward_var + self.transitions[self.tag_to_ix[STOP_TAG]]
 
         alpha = log_sum_exp(terminal_var)
+        print("FINAL ALPHA: ")
+        print(alpha) # batch size, 1 
         return alpha  # gets the probability for the sentence given ALL the tag pats
 
     def _get_lstm_features(self, batch):
