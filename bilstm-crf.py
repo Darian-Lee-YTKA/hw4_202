@@ -32,7 +32,7 @@ class BiLSTM_CRF(nn.Module):
         self.vocab_size = vocab_size
         self.tag_to_ix = tag_to_ix
         self.tagset_size = len(tag_to_ix)
-        self.batch_size
+        self.batch_size = batch_size
 
         self.word_embeds = nn.Embedding(vocab_size, embedding_dim) # normal word embed
         self.lstm = nn.LSTM(embedding_dim, hidden_dim // 2,
@@ -56,50 +56,100 @@ class BiLSTM_CRF(nn.Module):
         self.hidden = self.init_hidden()
 
     def init_hidden(self):
-        return (torch.randn(2, 1, self.hidden_dim // 2),
-                torch.randn(2, 1, self.hidden_dim // 2)) # intialize for random weights. Independent of batching
+        return (torch.randn(2, self.batch_size, self.hidden_dim // 2),
+                torch.randn(2, self.batch_size, self.hidden_dim // 2)) # intialize for random weights. Independent of batching
 
     def _forward_alg(self, feats):
+        print("inside forward algo")
         # Do the forward algorithm to compute the partition function
-        init_alphas = torch.full((1, self.tagset_size), -10000.)
+        init_alphas = torch.full((self.batch_size, self.tagset_size), -10000.)
+        print("init alphas ")
+        print(init_alphas)
         # START_TAG has all of the score.
-        init_alphas[0][self.tag_to_ix[START_TAG]] = 0.
+        init_alphas[:, self.tag_to_ix[START_TAG]] = 0.
+        print("init alphas after 0ing start")
+        print(init_alphas)
+        print("shape feats ")
+        print(feats.shape)
+        print("feats ")
+        print(feats)
+
 
         # Wrap in a variable so that we will get automatic backprop
         forward_var = init_alphas
 
         # Iterate through the sentence
-        for feat in feats:
+        batch_size, seq_len, tag_dim = feats.shape
+        for sequence_token in range(seq_len):
+            feat = feats[:, sequence_token, :] # processing across all batches
             alphas_t = []  # The forward tensors at this timestep
             for next_tag in range(self.tagset_size):
                 # broadcast the emission score: it is the same regardless of
                 # the previous tag
-                print("shape feat next_tag")
-                print(feat[next_tag].shape)
-                emit_score = feat[next_tag].view(
-                    1, -1).expand(1, self.tagset_size) # broadcasts the scalar emit score to be the size of the tag_set
+                # next tag will be the shape batch size
+                print("shape feat next_tag, then actual feat next tag")
+                print(feat[:, next_tag].shape)
+                print(feat[:, next_tag])  #
+                emit_score = feat[:, next_tag].unsqueeze(1).expand(batch_size, self.tagset_size) # broadcasts the scalar emit score to be the size of the tag_set
+                # we do this because the emission score is the same regardless of the previous tag
+                print("shape emit score")
+                print(emit_score.shape)
+                print(emit_score)
                 # the ith entry of trans_score is the score of transitioning to
                 # next_tag from i
-                trans_score = self.transitions[next_tag].view(1, -1)
+
+                trans_score = self.transitions[next_tag].view(1, -1).expand(batch_size, self.tagset_size)
+                # expand broadcasts it accross the batches
+                print("trans score")
+                print(trans_score)
                 # The ith entry of next_tag_var is the value for the
                 # edge (i -> next_tag) before we do log-sum-exp
+                print("🥭🥭forward var shape, trans var shape, emit score shape:")
+                print(forward_var.shape, trans_score.shape, emit_score.shape)
                 next_tag_var = forward_var + trans_score + emit_score
+                print("next tag var shape")
+                print(next_tag_var.shape)
+                print("next tag var")
+                print(next_tag_var)
                 # The forward variable for this tag is log-sum-exp of all the
                 # scores.
-                alphas_t.append(log_sum_exp(next_tag_var).view(1))
-            forward_var = torch.cat(alphas_t).view(1, -1)
-        terminal_var = forward_var + self.transitions[self.tag_to_ix[STOP_TAG]]
-        alpha = log_sum_exp(terminal_var)
-        return alpha
+                alphas_t.append(log_sum_exp(next_tag_var).view(1))  # this is the total sum of getting to the next point
+                print("alpha_ts.shape")
+                print(len(alphas_t))
+                print("printing alpha ts")
+                print(alphas_t)
+            print("printing alpha ts")
+            print(alphas_t)
+            print("printing torch.cat(alphas_t)")
+            print(torch.cat(alphas_t))
 
-    def _get_lstm_features(self, sentence):
+            forward_var = torch.cat(alphas_t).view(1, -1)
+            print("forward var shape")
+            print(forward_var.shape)
+            print("printing forward var")
+            print(forward_var)
+        terminal_var = forward_var + self.transitions[self.tag_to_ix[STOP_TAG]]
+
+        alpha = log_sum_exp(terminal_var)
+        return alpha  # gets the probability for the sentence given ALL the tag pats
+
+    def _get_lstm_features(self, batch):
+        data = [[3, 0, 1, 2, 2, 2, 2, 0],
+        [3, 1, 6, 6, 2, 2, 2, 0],
+        [9, 0, 1, 9, 2, 9, 2, 0]]
+
+        batch = torch.tensor(data)
+        print("batch.shape: ", batch.shape)
         self.hidden = self.init_hidden()
-        embeds = self.word_embeds(sentence)
+        embeds = self.word_embeds(batch)
+        print("embeds.shape: ", embeds.shape)
         # self.word_embeds(sentence) = batch_size, seq_length,embedding_dim
 
         lstm_out, self.hidden = self.lstm(embeds, self.hidden) # batch_size, seq len, hidden dim
-
+        print("lstm_out.shape: ", lstm_out.shape)
         lstm_feats = self.hidden2tag(lstm_out) # batch_size, tagset size
+        print("☘️☘️☘️ printing lstm_feats shape ☘️☘️☘️")
+        print(lstm_feats.shape)
         return lstm_feats
 
     def _score_sentence(self, feats, tags):
@@ -223,7 +273,7 @@ class IOBDataset(Dataset):
     def __init__(self):
         super().__init__()
         self.vocab = {"PAD": 0, "UNK": 1}
-        self.tag_vocab = {"PAD": 0, "UNK": 1}
+        self.tag_vocab = {"PAD": 0, "UNK": 1, "<START>": 2, "<STOP>": 3}
         self.x = []
         self.y = []
         self.inverse_vocab = {}
@@ -231,10 +281,10 @@ class IOBDataset(Dataset):
     def build_vocab(self, df):
 
         for row in df.itertuples():
-            print(row)
+
             for token in row.tokens:
                 if token not in self.vocab:
-                    print(token)
+
                     self.vocab[token] = len(self.vocab)
             for tag in row.tags:
                 if tag not in self.tag_vocab:
@@ -243,6 +293,8 @@ class IOBDataset(Dataset):
         #print(self.tag_vocab)
         self.inverse_vocab = {value: key for key, value in self.vocab.items()}
         self.inverse_tag_vocab = {value: key for key, value in self.tag_vocab.items()}
+
+
 
 
     def load_vocab(self, vocab, tag_vocab):
@@ -322,13 +374,13 @@ def collate_fn(batch):
 
 
 
-model = BiLSTM_CRF(len(word_to_ix), len(train_dataset), EMBEDDING_DIM, HIDDEN_DIM)
+model = BiLSTM_CRF(len(train_dataset), train_dataset.tag_vocab, EMBEDDING_DIM, HIDDEN_DIM, 3)
 optimizer = optim.SGD(model.parameters(), lr=0.01, weight_decay=1e-4)
 
 # Check predictions before training
 
-
-
+features = model._get_lstm_features("batch")
+model._forward_alg(features)
 # Make sure prepare_sequence from earlier in the LSTM section is loaded
 for epoch in range(
         10):

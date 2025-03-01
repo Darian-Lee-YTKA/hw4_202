@@ -87,9 +87,13 @@ class BiLSTM_CRF(nn.Module):
                 print(emit_score)
                 # the ith entry of trans_score is the score of transitioning to
                 # next_tag from i
-
+                print("☘️ self.transitions")
+                print(self.transitions)
+                print("☘️ self.transitions[next_tag]")
+                print(self.transitions[next_tag])
                 trans_score = self.transitions[next_tag].view(1, -1)
                 print(trans_score)
+                print("☘️ shape trans score: ", trans_score.shape)
                 # The ith entry of next_tag_var is the value for the
                 # edge (i -> next_tag) before we do log-sum-exp
 
@@ -118,7 +122,7 @@ class BiLSTM_CRF(nn.Module):
         terminal_var = forward_var + self.transitions[self.tag_to_ix[STOP_TAG]]
 
         alpha = log_sum_exp(terminal_var)
-        return alpha
+        return alpha # gets the probability for the sentence given ALL the tag pats
 
     def _get_lstm_features(self, sentence):
         print("inside get lstm features")
@@ -149,7 +153,7 @@ class BiLSTM_CRF(nn.Module):
             print("printing score inside score function")
             print(score)
         score = score + self.transitions[self.tag_to_ix[STOP_TAG], tags[-1]]
-        return score
+        return score # gets the probability for the sentence given only the best tag path
 
     def _viterbi_decode(self, feats):
         backpointers = []
@@ -206,7 +210,8 @@ class BiLSTM_CRF(nn.Module):
         gold_score = self._score_sentence(feats, tags)
         print("printing gold score in neg log like")
         print(gold_score)
-        return forward_score - gold_score
+        return forward_score - gold_score # calculates how different the score is when considering all tags to the score when only considering the true
+        # idea is that loss of 0 means the probabilities of the true tag sequence is 1 and probabilities of other tags are 0
 
     def forward(self, sentence):  # dont confuse this with _forward_alg above.
         # Get the emission scores from the BiLSTM
