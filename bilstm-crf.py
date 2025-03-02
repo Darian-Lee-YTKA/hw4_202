@@ -5,6 +5,7 @@ import torch.optim as optim
 import pandas as pd
 torch.manual_seed(12)
 from torch.utils.data import Dataset
+from torch.utils.data import DataLoader
 
 def argmax(vec):
     # return the argmax as a python int
@@ -142,15 +143,11 @@ class BiLSTM_CRF(nn.Module):
 
         alpha = log_sum_exp(terminal_var)
         print("FINAL ALPHA: ")
-        print(alpha) # batch size, 1 
-        return alpha  # gets the probability for the sentence given ALL the tag pats
+        print(alpha.view(1, -1).squeeze()) # batch size, 1
+        return alpha.view(1, -1).squeeze()  # gets the probability for the sentence given ALL the tag pats
 
     def _get_lstm_features(self, batch):
-        data = [[3, 0, 1, 2, 2, 2, 2, 0],
-        [3, 1, 6, 6, 2, 2, 2, 0],
-        [9, 0, 1, 9, 2, 9, 2, 0]]
 
-        batch = torch.tensor(data)
         print("batch.shape: ", batch.shape)
         self.hidden = self.init_hidden()
         embeds = self.word_embeds(batch)
@@ -166,12 +163,30 @@ class BiLSTM_CRF(nn.Module):
 
     def _score_sentence(self, feats, tags):
         # Gives the score of a provided tag sequence
-        score = torch.zeros(1)
-        tags = torch.cat([torch.tensor([self.tag_to_ix[START_TAG]], dtype=torch.long), tags])
-        for i, feat in enumerate(feats):
-            score = score + \
-                self.transitions[tags[i + 1], tags[i]] + feat[tags[i + 1]]
-        score = score + self.transitions[self.tag_to_ix[STOP_TAG], tags[-1]]
+        print("we are inside score sentence")
+        batch_size, seq_len, tag_dim = feats.shape
+
+        score = torch.zeros(batch_size)
+        tags = torch.cat([torch.full((batch_size, 1), self.tag_to_ix[START_TAG], dtype=torch.long), tags], dim=1)
+        print("tags")
+        print(tags)
+        print(tags.shape)
+        # adds start token to all seq in batch
+        for i in range(seq_len):
+            feat = feats[:, i, :] # minic the loop in the non batched version
+            print("new feat shape")
+            print(feat.shape)
+            print(feat)
+            print("self.transitions[tags[:, i + 1], tags[:, i]]")
+            print(self.transitions[tags[:, i + 1], tags[:, i]])
+            print(self.transitions[tags[:, i + 1], tags[:, i]].shape)
+
+            score = score + self.transitions[tags[:, i + 1], tags[:, i]] + feat.gather(1, tags[:, i + 1].unsqueeze(1)).squeeze(1)
+            print("intermediate score: ", score) # calculates the core over just the correct tag sequence
+
+        score = score + self.transitions[self.tag_to_ix[STOP_TAG], tags[:, -1]]
+        print("final score: ", score)
+
         return score
 
     def _viterbi_decode(self, feats):
@@ -222,7 +237,11 @@ class BiLSTM_CRF(nn.Module):
         feats = self._get_lstm_features(sentence)
         forward_score = self._forward_alg(feats)
         gold_score = self._score_sentence(feats, tags)
-        return forward_score - gold_score
+        per_seq_score = forward_score - gold_score
+        print("we are investigating loss")
+        print(per_seq_score.shape)
+        print(sum(per_seq_score))
+        return sum(per_seq_score)
 
     def forward(self, sentence):  # dont confuse this with _forward_alg above.
         # Get the emission scores from the BiLSTM
@@ -292,7 +311,9 @@ class IOBDataset(Dataset):
         self.inverse_tag_vocab = {}
     def build_vocab(self, df):
 
+
         for row in df.itertuples():
+
 
             for token in row.tokens:
                 if token not in self.vocab:
@@ -317,7 +338,12 @@ class IOBDataset(Dataset):
 
 
     def encode_data(self, df):
+        counter = 0
         for row in df.itertuples():
+
+            if counter == 8:
+                break
+            counter += 1
             row_x = []
             row_y = []
             for token in row.tokens:
@@ -346,7 +372,7 @@ class IOBDataset(Dataset):
 
     def __len__(self):
 
-        return len(self.vocab)
+        return len(self.x)
 
     def __getitem__(self, idx):
 
@@ -369,50 +395,61 @@ test_dataset = IOBDataset()
 test_dataset.build_vocab(dev_df)
 test_dataset.encode_data(dev_df)
 test_dataset.check_work(500)
+batch_size = 8
 
-
+import torch.nn.functional as F
 def collate_fn(batch):
 
-    inputs, labels = zip(*batch)
+    inputs, labels = zip(*batch) # both are a list of torch tensors
 
-    max_len = max(len(seq) for seq in inputs)
 
-    padded_inputs = [seq + [0] * (max_len - len(seq)) for seq in inputs]
+    max_len = max(seq.shape[0] for seq in inputs)
 
-    padded_inputs = torch.tensor(padded_inputs, dtype=torch.long)
-    labels = torch.tensor(labels, dtype=torch.long)
+    padded_inputs = torch.stack([F.pad(seq, (0, max_len - seq.shape[0]), value=0) for seq in inputs])
+
+    labels = torch.stack([F.pad(seq, (0, max_len - seq.shape[0]), value=0) for seq in labels])
+
+
+    print(padded_inputs.shape)
+    print(labels.shape)
 
     return padded_inputs, labels
+print("number of x and y")
+print(len(train_dataset.x))
+print(len(train_dataset.y))
 
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+dev_loader = DataLoader(dev_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
+test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
 
-
-model = BiLSTM_CRF(len(train_dataset), train_dataset.tag_vocab, EMBEDDING_DIM, HIDDEN_DIM, 3)
+model = BiLSTM_CRF(len(train_dataset.vocab), train_dataset.tag_vocab, EMBEDDING_DIM, HIDDEN_DIM, 8)
 optimizer = optim.SGD(model.parameters(), lr=0.01, weight_decay=1e-4)
 
 # Check predictions before training
 
-features = model._get_lstm_features("batch")
-model._forward_alg(features)
+
+
 # Make sure prepare_sequence from earlier in the LSTM section is loaded
+print(len(train_loader))
 for epoch in range(
-        10):
-    for sentence, tags in batch:
-        # Step 1. Remember that Pytorch accumulates gradients.
-        # We need to clear them out before each instance
-        model.zero_grad()
+        1):
+    for batch in train_loader:
+            sentence,tags = batch
+            print("shape of sentence and tag in the loop")
+            print(sentence.shape)
+            print(tags.shape)
+            # Step 1. Remember that Pytorch accumulates gradients.
+            # We need to clear them out before each instance
+            model.zero_grad()
 
-        # Step 2. Get our inputs ready for the network, that is,
-        # turn them into Tensors of word indices.
-        sentence_in = prepare_sequence(sentence, word_to_ix)
-        targets = torch.tensor([tag_to_ix[t] for t in tags], dtype=torch.long)
 
-        # Step 3. Run our forward pass.
-        loss = model.neg_log_likelihood(sentence_in, targets)
+            loss = model.neg_log_likelihood(sentence, tags)
+            print(loss)
 
-        # Step 4. Compute the loss, gradients, and update the parameters by
-        # calling optimizer.step()
-        loss.backward()
-        optimizer.step()
+            # Step 4. Compute the loss, gradients, and update the parameters by
+            # calling optimizer.step()
+            loss.backward()
+            optimizer.step()
 
 # Check predictions after training
 with torch.no_grad():

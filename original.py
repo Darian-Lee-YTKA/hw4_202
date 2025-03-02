@@ -156,16 +156,30 @@ class BiLSTM_CRF(nn.Module):
     def _score_sentence(self, feats, tags):
         print("inside score sentenc")
         # Gives the score of a provided tag sequence
+        print("feat shape")
+        print(feats.shape)
+        print(feats)
+
         score = torch.zeros(1)
         tags = torch.cat([torch.tensor([self.tag_to_ix[START_TAG]], dtype=torch.long), tags])
         print("printing tags in score function")
         print(tags)
         for i, feat in enumerate(feats):
+            print("shape of this feat")
+            print(feat.shape)
+            print("self.transitions[tags[i + 1]")
+            print(self.transitions[tags[i + 1], tags[i]])
+            print("feat[tags[i + 1]]")
+            print(feat[tags[i + 1]])
+
             score = score + \
                 self.transitions[tags[i + 1], tags[i]] + feat[tags[i + 1]]
             print("printing score inside score function")
             print(score)
+            print("score shape!")
+            print(score.shape)
         score = score + self.transitions[self.tag_to_ix[STOP_TAG], tags[-1]]
+        print("final score shape!: ", score.shape)
         return score # gets the probability for the sentence given only the best tag path
 
     def _viterbi_decode(self, feats):
@@ -217,11 +231,13 @@ class BiLSTM_CRF(nn.Module):
         print("inside neg log like")
         print(sentence)
         feats = self._get_lstm_features(sentence)
+        gold_score = self._score_sentence(feats, tags)
+        print("printing gold score in neg log like")
+
         forward_score = self._forward_alg(feats)
         print("printing forward score in neg log lik")
         print(forward_score)
-        gold_score = self._score_sentence(feats, tags)
-        print("printing gold score in neg log like")
+
         print(gold_score)
         return forward_score - gold_score # calculates how different the score is when considering all tags to the score when only considering the true
         # idea is that loss of 0 means the probabilities of the true tag sequence is 1 and probabilities of other tags are 0
@@ -256,7 +272,10 @@ for sentence, tags in training_data:
 tag_to_ix = {"B": 0, "I": 1, "O": 2, START_TAG: 3, STOP_TAG: 4}
 
 model = BiLSTM_CRF(len(word_to_ix), tag_to_ix, EMBEDDING_DIM, HIDDEN_DIM)
+
 optimizer = optim.SGD(model.parameters(), lr=0.01, weight_decay=1e-4)
+
+
 
 # Check predictions before training
 '''with torch.no_grad():
