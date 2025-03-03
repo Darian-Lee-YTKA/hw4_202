@@ -188,11 +188,17 @@ class BiLSTM_CRF(nn.Module):
 
         # Initialize the viterbi variables in log space
         init_vvars = torch.full((1, self.tagset_size), -10000.)
+        print("init vars shape")
+        print(init_vvars.shape)
         init_vvars[0][self.tag_to_ix[START_TAG]] = 0
 
         # forward_var at step i holds the viterbi variables for step i-1
         forward_var = init_vvars
-        for feat in feats:
+        print("feats shape")
+        print(feats.shape)
+        for feat in feats: # this iterates over sequence length
+            print("the shape of this feat")
+            print(feat.shape)
             bptrs_t = []  # holds the backpointers for this step
             viterbivars_t = []  # holds the viterbi variables for this step
 
@@ -202,12 +208,22 @@ class BiLSTM_CRF(nn.Module):
                 # from tag i to next_tag.
                 # We don't include the emission scores here because the max
                 # does not depend on them (we add them in below)
-                next_tag_var = forward_var + self.transitions[next_tag]
-                best_tag_id = argmax(next_tag_var)
-                bptrs_t.append(best_tag_id)
-                viterbivars_t.append(next_tag_var[0][best_tag_id].view(1))
+
+                # forward var is the probability of the past token
+                next_tag_var = forward_var + self.transitions[next_tag] # gets the transitions from all possible past vars
+                print("self.transitions next var: ", self.transitions[next_tag])
+
+                best_tag_id = argmax(next_tag_var) # gets the tag that lead to the best path
+                bptrs_t.append(best_tag_id) # saves this information. We do this because we want to follow the trail of backpointers for the one that ends in stop
+
+                viterbivars_t.append(next_tag_var[0][best_tag_id].view(1)) # gets the max by indexing at the max index. Then tranposes to be of shape(1)
+                # so this is the actual max probability before adding the emission prob
+                # is a one dim tensor
+
             # Now add in the emission scores, and assign forward_var to the set
             # of viterbi variables we just computed
+            print("viterbi vars!")
+            print(viterbivars_t)
             forward_var = (torch.cat(viterbivars_t) + feat).view(1, -1)
             backpointers.append(bptrs_t)
 
@@ -278,10 +294,10 @@ optimizer = optim.SGD(model.parameters(), lr=0.01, weight_decay=1e-4)
 
 
 # Check predictions before training
-'''with torch.no_grad():
+with torch.no_grad():
     precheck_sent = prepare_sequence(training_data[0][0], word_to_ix)
     precheck_tags = torch.tensor([tag_to_ix[t] for t in training_data[0][1]], dtype=torch.long)
-    print(model(precheck_sent))'''
+    print(model(precheck_sent))
 
 # Make sure prepare_sequence from earlier in the LSTM section is loaded
 for epoch in range(
@@ -307,8 +323,8 @@ for epoch in range(
         loss.backward()
         optimizer.step()
 
-'''# Check predictions after training
+# Check predictions after training
 with torch.no_grad():
     precheck_sent = prepare_sequence(training_data[0][0], word_to_ix)
-    print(model(precheck_sent))'''
+    print(model(precheck_sent))
 # We got it!
