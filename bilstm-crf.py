@@ -6,7 +6,7 @@ import pandas as pd
 torch.manual_seed(12)
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
-
+import numpy as np
 def argmax(vec):
     # return the argmax as a python int
     _, idx = torch.max(vec, 1)
@@ -20,8 +20,8 @@ def prepare_sequence(seq, to_ix):
 
 # Compute log sum exp in a numerically stable way for the forward algorithm
 def log_sum_exp(vec):
-    print("vec")
-    print(vec.shape)
+    #print("vec")
+    #print(vec.shape)
 
     max_score, max_indices = torch.max(vec, dim=-1, keepdim=True)
 
@@ -43,7 +43,7 @@ class BiLSTM_CRF(nn.Module):
 
         self.word_embeds = nn.Embedding(vocab_size, embedding_dim) # normal word embed
         self.lstm = nn.LSTM(embedding_dim, hidden_dim // 2,
-                            num_layers=1, bidirectional=True, batch_first = True) # normal bilstm with batch false
+                            num_layers=1, bidirectional=True, batch_first = True, dropout= .4) # normal bilstm with batch false
         # the input shape will be seq_len, batchsize, embed dim
         # I added batch first = True. thus it will be batch_size, seq_len, embed_dim
 
@@ -67,7 +67,7 @@ class BiLSTM_CRF(nn.Module):
                 torch.randn(2, self.batch_size, self.hidden_dim // 2)) # intialize for random weights. Independent of batching
 
     def _forward_alg(self, feats):
-        print("inside forward algo")
+        #print("inside forward algo")
         # Do the forward algorithm to compute the partition function
         init_alphas = torch.full((self.batch_size, self.tagset_size), -10000.)
         #print("init alphas ")
@@ -76,8 +76,8 @@ class BiLSTM_CRF(nn.Module):
         init_alphas[:, self.tag_to_ix[START_TAG]] = 0.
         #print("init alphas after 0ing start")
         #print(init_alphas)
-        print("shape feats ")
-        print(feats.shape)
+        #print("shape feats ")
+        #print(feats.shape)
         #print("feats ")
         #print(feats)
 
@@ -94,13 +94,13 @@ class BiLSTM_CRF(nn.Module):
                 # broadcast the emission score: it is the same regardless of
                 # the previous tag
                 # next tag will be the shape batch size
-                print("shape feat next_tag, then actual feat next tag")
-                print(feat[:, next_tag].shape)
+                #print("shape feat next_tag, then actual feat next tag")
+                #print(feat[:, next_tag].shape)
                 #print(feat[:, next_tag])  #
                 emit_score = feat[:, next_tag].unsqueeze(1).expand(batch_size, self.tagset_size) # broadcasts the scalar emit score to be the size of the tag_set
                 # we do this because the emission score is the same regardless of the previous tag
-                print("shape emit score")
-                print(emit_score.shape)
+                #print("shape emit score")
+                #print(emit_score.shape)
                 #print(emit_score)
                 # the ith entry of trans_score is the score of transitioning to
                 # next_tag from i
@@ -111,8 +111,8 @@ class BiLSTM_CRF(nn.Module):
                 #print(trans_score)
                 # The ith entry of next_tag_var is the value for the
                 # edge (i -> next_tag) before we do log-sum-exp
-                print("🥭🥭forward var shape, trans var shape, emit score shape:")
-                print(forward_var.shape, trans_score.shape, emit_score.shape)
+                #print("🥭🥭forward var shape, trans var shape, emit score shape:")
+                #print(forward_var.shape, trans_score.shape, emit_score.shape)
                 next_tag_var = forward_var + trans_score + emit_score
                 #print("next tag var shape")
                 #print(next_tag_var.shape)
@@ -128,69 +128,69 @@ class BiLSTM_CRF(nn.Module):
                     alphas_t = log_sum_next_var
                 else:
                     alphas_t = torch.cat((alphas_t, log_sum_next_var), dim=1)  # this is the total sum of getting to the next point
-                print("alpha_ts.shape")
-                print(alphas_t.shape)
+                #print("alpha_ts.shape")
+                #print(alphas_t.shape)
                 #print("printing alpha ts")
                 #print(alphas_t)
 
 
             forward_var = alphas_t # its already in the proper tensor so we dont need to worry about this
-            print("forward var shape")
-            print(forward_var.shape)
+            #print("forward var shape")
+            #print(forward_var.shape)
             #print("printing forward var")
             #print(forward_var)
         terminal_var = forward_var + self.transitions[self.tag_to_ix[STOP_TAG]]
 
         alpha = log_sum_exp(terminal_var)
-        print("FINAL ALPHA: ")
-        print(alpha.view(1, -1).squeeze()) # batch size, 1
+        #print("FINAL ALPHA: ")
+        #print(alpha.view(1, -1).squeeze()) # batch size, 1
         return alpha.view(1, -1).squeeze()  # gets the probability for the sentence given ALL the tag pats
 
     def _get_lstm_features(self, batch):
 
-        print("batch.shape: ", batch.shape)
+        #print("batch.shape: ", batch.shape)
         self.hidden = self.init_hidden()
         embeds = self.word_embeds(batch)
-        print("embeds.shape: ", embeds.shape)
+        #print("embeds.shape: ", embeds.shape)
         # self.word_embeds(sentence) = batch_size, seq_length,embedding_dim
 
         lstm_out, self.hidden = self.lstm(embeds, self.hidden) # batch_size, seq len, hidden dim
-        print("lstm_out.shape: ", lstm_out.shape)
+        #print("lstm_out.shape: ", lstm_out.shape)
         lstm_feats = self.hidden2tag(lstm_out) # batch_size, tagset size
-        print("☘️☘️☘️ printing lstm_feats shape ☘️☘️☘️")
-        print(lstm_feats.shape)
+        #print("☘️☘️☘️ printing lstm_feats shape ☘️☘️☘️")
+        #print(lstm_feats.shape)
         return lstm_feats
 
     def _score_sentence(self, feats, tags):
         # Gives the score of a provided tag sequence
-        print("we are inside score sentence")
+        #print("we are inside score sentence")
         batch_size, seq_len, tag_dim = feats.shape
 
         score = torch.zeros(batch_size)
         tags = torch.cat([torch.full((batch_size, 1), self.tag_to_ix[START_TAG], dtype=torch.long), tags], dim=1)
-        print("tags")
-        print(tags)
-        print(tags.shape)
+        #print("tags")
+        #print(tags)
+        #print(tags.shape)
         # adds start token to all seq in batch
         for i in range(seq_len):
             feat = feats[:, i, :] # minic the loop in the non batched version
-            print("new feat shape")
-            print(feat.shape)
-            print(feat)
-            print("self.transitions[tags[:, i + 1], tags[:, i]]")
-            print(self.transitions[tags[:, i + 1], tags[:, i]])
-            print(self.transitions[tags[:, i + 1], tags[:, i]].shape)
+            #print("new feat shape")
+            #print(feat.shape)
+            #print(feat)
+            #print("self.transitions[tags[:, i + 1], tags[:, i]]")
+            #print(self.transitions[tags[:, i + 1], tags[:, i]])
+            #print(self.transitions[tags[:, i + 1], tags[:, i]].shape)
 
             score = score + self.transitions[tags[:, i + 1], tags[:, i]] + feat.gather(1, tags[:, i + 1].unsqueeze(1)).squeeze(1)
-            print("intermediate score: ", score) # calculates the core over just the correct tag sequence
+            #print("intermediate score: ", score) # calculates the core over just the correct tag sequence
 
         score = score + self.transitions[self.tag_to_ix[STOP_TAG], tags[:, -1]]
-        print("final score: ", score)
+        #print("final score: ", score)
 
         return score
 
     def _viterbi_decode(self, feats):
-        print("\n\n😏😏======== BEGINNING VITERBI ==========😏😏")
+        #print("\n\n😏😏======== BEGINNING VITERBI ==========😏😏")
         backpointers = []
 
         # Initialize the viterbi variables in log space
@@ -201,9 +201,9 @@ class BiLSTM_CRF(nn.Module):
         forward_var = init_vvars
         batch_size, seq_len, tagset_dim = feats.shape
         for seq_token in range(seq_len):
-            print("\n\nSTARTING A NEW TOKEN ~~~~~ ")
+            #print("\n\nSTARTING A NEW TOKEN ~~~~~ ")
             feat = feats[:, seq_token, :] # we iterate over sequence length
-            print("feat.shape: ", feat.shape)
+            #print("feat.shape: ", feat.shape)
             bptrs_t = None  # holds the backpointers for this step
             # we will make this start as none. At the first interation we will create it and then we will keep appending to it.
             # it will be of shape batch_size, tagset_size
@@ -212,7 +212,7 @@ class BiLSTM_CRF(nn.Module):
             # it will be of shape batch_size, tagset_size
 
             for next_tag in range(self.tagset_size): # this is the tag that we are transitioning too
-                print("\n\nSTARTING A NEW TAG ")
+                #print("\n\nSTARTING A NEW TAG ")
                 # next_tag_var[i] holds the viterbi variable for tag i at the
                 # previous step, plus the score of transitioning
                 # from tag i to next_tag.
@@ -223,27 +223,27 @@ class BiLSTM_CRF(nn.Module):
 
 
                 next_tag_var = forward_var + self.transitions[next_tag].expand(batch_size, tagset_dim)
-                print("next tag var shape, ", next_tag_var.shape)
+                #print("next tag var shape, ", next_tag_var.shape)
                 best_tag_id = torch.argmax(next_tag_var, dim=-1) # we are only saving the best path (through the best past tag) to get to the current tag
                 # we will need argmaxes for each batch because it will be batchsize, tagset dim
                 # best tag id should be of dim batchsize, 1
-                print("++best tag id shape, ", best_tag_id.shape)
+                #print("++best tag id shape, ", best_tag_id.shape)
                 if bptrs_t is None:
                     bptrs_t = best_tag_id.unsqueeze(1)
-                    print("shape back pointers after init: ", bptrs_t.shape)
+                    #print("shape back pointers after init: ", bptrs_t.shape)
                 else:
                     bptrs_t = torch.cat((bptrs_t, best_tag_id.unsqueeze(1)), dim=-1)# # saves this information. We do this because we want to follow the trail of backpointers for the one that ends in stop
                     # we are appending it along the sequence len dimebsion
-                    print("shape back pointers after cat: ", bptrs_t.shape)
+                    #print("shape back pointers after cat: ", bptrs_t.shape)
 
                 if viterbivars_t is None:
                     viterbivars_t = next_tag_var.gather(1, best_tag_id.unsqueeze(1))
-                    print("shape viterbivars pointers after init: ", viterbivars_t.shape)
+                    #print("shape viterbivars pointers after init: ", viterbivars_t.shape)
 
                 else:
-                    print("the shape of the next best tags: ", next_tag_var.gather(1, best_tag_id.unsqueeze(1)).shape)
+                    #print("the shape of the next best tags: ", next_tag_var.gather(1, best_tag_id.unsqueeze(1)).shape)
                     viterbivars_t = torch.cat((viterbivars_t, next_tag_var.gather(1, best_tag_id.unsqueeze(1))), dim=-1)# gets the max by indexing at the max index. Then tranposes to be of shape(1)
-                    print("shape viterbivars pointers after cat: ", viterbivars_t.shape)
+                    #print("shape viterbivars pointers after cat: ", viterbivars_t.shape)
 
                 # so this is the actual max probability before adding the emission prob
 
@@ -253,12 +253,12 @@ class BiLSTM_CRF(nn.Module):
             backpointers.append(bptrs_t) # addend all backpointers for that token
             # this will have (batchsize, tagset size tensors for every token in sequence )
 
-        print("\n\n 🍋WE ARE STARTING TO REVERSE🍋 ")
+        #print("\n\n 🍋WE ARE STARTING TO REVERSE🍋 ")
         # Transition to STOP_TAG
         terminal_var = forward_var + self.transitions[self.tag_to_ix[STOP_TAG]].expand(batch_size, tagset_dim)
-        print("terminal_var.shape: ", terminal_var.shape)
+        #print("terminal_var.shape: ", terminal_var.shape)
         best_tag_id = torch.argmax(terminal_var, dim=-1)
-        print("best_tag_id.shape: ", best_tag_id.shape)
+        #print("best_tag_id.shape: ", best_tag_id.shape)
         path_score = terminal_var[:, best_tag_id]
 
         # Follow the back pointers to decode the best path.
@@ -266,16 +266,16 @@ class BiLSTM_CRF(nn.Module):
         best_path = best_tag_id.view(batch_size, 1)# batchsize, 1
         for bptrs_t in reversed(backpointers): # iterating through the list of batchsize by tagset size tensors
             # bptrs_t = shape(batch_size, tagset size)
-            print("\n\nstarting new back pointer")
+            #print("\n\nstarting new back pointer")
 
-            print("bptrs_t.shape: ", bptrs_t.shape)
+            #print("bptrs_t.shape: ", bptrs_t.shape)
             best_tag_id = torch.gather(bptrs_t, 1, best_tag_id.unsqueeze(1)).squeeze()
-            print("best tag id shape in the loop: ", best_tag_id.shape)
+            #print("best tag id shape in the loop: ", best_tag_id.shape)
             viewed_best_tag_id = best_tag_id.view(batch_size, 1)
-            print("__best_tag_id.shape:, ", viewed_best_tag_id.shape)
-            print("best_path shape: ", best_path.shape)
+            #print("__best_tag_id.shape:, ", viewed_best_tag_id.shape)
+            #print("best_path shape: ", best_path.shape)
             best_path = torch.cat((viewed_best_tag_id, best_path), dim=-1) # concats it to the path
-            print("we completed a cycle")
+            #print("we completed a cycle")
         # Pop off the start tag (we dont want to return that to the caller)
         start = best_path[:, 0] # we appended in reverse order so we check the 0th tag
 
@@ -287,7 +287,7 @@ class BiLSTM_CRF(nn.Module):
             decoded_path.append(decoded_tags)
 
         # Print the decoded paths
-        print("Decoded best path: ", decoded_path)
+        print("Decoded best path: ", decoded_path[0])
 
 
 
@@ -300,9 +300,9 @@ class BiLSTM_CRF(nn.Module):
         forward_score = self._forward_alg(feats)
         gold_score = self._score_sentence(feats, tags)
         per_seq_score = forward_score - gold_score
-        print("we are investigating loss")
-        print(per_seq_score.shape)
-        print(sum(per_seq_score))
+        #print("we are investigating loss")
+        #print(per_seq_score.shape)
+        #print(sum(per_seq_score))
         return sum(per_seq_score)
 
     def forward(self, sentence):  # dont confuse this with _forward_alg above.
@@ -315,8 +315,8 @@ class BiLSTM_CRF(nn.Module):
 
 START_TAG = "<START>"
 STOP_TAG = "<STOP>"
-EMBEDDING_DIM = 128
-HIDDEN_DIM = 128
+EMBEDDING_DIM = 32
+HIDDEN_DIM = 32
 
 
 
@@ -371,6 +371,7 @@ class IOBDataset(Dataset):
         self.y = []
         self.inverse_vocab = {}
         self.inverse_tag_vocab = {}
+        self.char_vocab = {}
         self.test_sentence = None # stores a batch of 8 test sentences for debugging
         self.test_tags = None
     def build_vocab(self, df):
@@ -383,13 +384,19 @@ class IOBDataset(Dataset):
                 if token not in self.vocab:
 
                     self.vocab[token] = len(self.vocab)
+                for letter in token:
+                    if letter not in self.char_vocab:
+                        self.char_vocab[letter] = len(self.char_vocab)
             for tag in row.tags:
                 if tag not in self.tag_vocab:
                     self.tag_vocab[tag] = len(self.tag_vocab)
+
         #print(self.vocab)
         #print(self.tag_vocab)
         self.inverse_vocab = {value: key for key, value in self.vocab.items()}
         self.inverse_tag_vocab = {value: key for key, value in self.tag_vocab.items()}
+
+
 
 
 
@@ -403,7 +410,10 @@ class IOBDataset(Dataset):
 
     def encode_data(self, df):
 
+
         for row in df.itertuples():
+
+
 
 
             row_x = []
@@ -431,6 +441,7 @@ class IOBDataset(Dataset):
 
 
 
+    # decodes based on index
     def decode_data(self, idx):
         tokens = ""
         tags = []
@@ -438,6 +449,22 @@ class IOBDataset(Dataset):
         for token in self.x[idx]:
             tokens += self.inverse_vocab.get(token.item(), 1) + " "
         for tag in self.y[idx]:
+
+            tags.append(self.inverse_tag_vocab.get(tag.item(), 1))
+        return tokens, tags
+
+    # decodes sentence
+    def decode_sentence(self, sentence, tags_seq):
+        sentence = sentence.squeeze() # size seq_len
+        print(sentence.shape)
+        tags_seq = tags_seq.squeeze() # size seq_len
+        print(tags_seq.shape)
+        tokens = ""
+        tags = []
+
+        for token in sentence:
+            tokens += self.inverse_vocab.get(token.item(), 1) + " "
+        for tag in tags_seq:
 
             tags.append(self.inverse_tag_vocab.get(tag.item(), 1))
         return tokens, tags
@@ -490,8 +517,7 @@ def collate_fn(batch):
     labels = torch.stack([F.pad(seq, (0, max_len - seq.shape[0]), value=0) for seq in labels])
 
 
-    print(padded_inputs.shape)
-    print(labels.shape)
+
 
     return padded_inputs, labels
 print("number of x and y")
@@ -503,7 +529,7 @@ dev_loader = DataLoader(dev_dataset, batch_size=batch_size, shuffle=False, colla
 test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
 
 model = BiLSTM_CRF(len(train_dataset.vocab), train_dataset.tag_vocab, EMBEDDING_DIM, HIDDEN_DIM, 8)
-optimizer = optim.SGD(model.parameters(), lr=0.01, weight_decay=1e-4)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
 
 # Check predictions before training
 
@@ -515,25 +541,82 @@ with torch.no_grad():
 
 # Make sure prepare_sequence from earlier in the LSTM section is loaded
 print(len(train_loader))
-for epoch in range(
-        100):
+for epoch in range(6):
+    print("STARTING EPOCH: ", epoch)
+    epoch_loss = []
     for batch in train_loader:
-            sentence,tags = batch
-            print("shape of sentence and tag in the loop")
-            print(sentence.shape)
-            print(tags.shape)
-            # Step 1. Remember that Pytorch accumulates gradients.
-            # We need to clear them out before each instance
-            model.zero_grad()
+            sentence, tags = batch
+            if sentence.shape[0] != 8:
+                continue
+            else:
+                #print("shape of sentence and tag in the loop")
+                #print(sentence.shape)
+                #print(tags.shape)
+                # Step 1. Remember that Pytorch accumulates gradients.
+                # We need to clear them out before each instance
+                model.zero_grad()
 
 
-            loss = model.neg_log_likelihood(sentence, tags)
-            print("\n\n\n\n🤩🤩🤩🤩THE LOSS IS AS FOLLOWS: ", loss)
+                loss = model.neg_log_likelihood(sentence, tags)
 
-            # Step 4. Compute the loss, gradients, and update the parameters by
-            # calling optimizer.step()
-            loss.backward()
-            optimizer.step()
+                epoch_loss.append(loss.item())
+                # Step 4. Compute the loss, gradients, and update the parameters by
+                # calling optimizer.step()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5)
+                optimizer.step()
+    print("printing the last train prediction of batch")
+    sentence = sentence[0, :]
+    tags = tags[0, :]
+    _sentence, _tags = train_dataset.decode_sentence(sentence, tags)
+    print("true sentence:")
+    print(_sentence)
+    print("true tags:")
+    print(_tags)
+    print("predicted tags:")
+    model(sentence.repeat(8, 1)) # reapeating it so that it doesnt piss off our lstm
+    epoch_loss = np.mean(epoch_loss)
+    print("THE EPOCH LOSS WAS: ", epoch_loss)
+
+    val_loss = []
+    model.eval()
+    with torch.no_grad():
+        for batch in dev_loader:
+            sentence, tags = batch
+            if sentence.shape[0] != 8:
+                continue
+            else:
+                #print("shape of sentence and tag in the loop")
+                #print(sentence.shape)
+                #print(tags.shape)
+                # Step 1. Remember that Pytorch accumulates gradients.
+                # We need to clear them out before each instance
+                model.zero_grad()
+
+
+                loss = model.neg_log_likelihood(sentence, tags)
+
+                val_loss.append(loss.item())
+                # Step 4. Compute the loss, gradients, and update the parameters by
+                # calling optimizer.step()
+        print("printing the last val prediction")
+        sentence = sentence[0, :]
+        tags = tags[0, :]
+        _sentence, _tags = train_dataset.decode_sentence(sentence, tags)
+        print("true sentence:")
+        print(_sentence)
+        print("true tags:")
+        print(_tags)
+        print("predicted tags:")
+        model(sentence.repeat(8, 1))  # reapeating it so that it doesnt piss off our lstm
+    val_loss = np.mean(val_loss)
+
+
+    print("THE VAL LOSS WAS: ", val_loss)
+
+
+
+
 print("training done!")
 
 with torch.no_grad():
@@ -542,5 +625,43 @@ with torch.no_grad():
     print(precheck_sent)
     print(model(precheck_sent))
 # Check predictions after training
+
+if 5 > 2: # don not want to have to undo all the indents
+    test_loss = []
+    model.eval()
+    with torch.no_grad():
+        for batch in test_loader:
+            sentence, tags = batch
+            if sentence.shape[0] != 8:
+                continue
+            else:
+                #print("shape of sentence and tag in the loop")
+                #print(sentence.shape)
+                #print(tags.shape)
+                # Step 1. Remember that Pytorch accumulates gradients.
+                # We need to clear them out before each instance
+                model.zero_grad()
+
+
+                loss = model.neg_log_likelihood(sentence, tags)
+
+                test_loss.append(loss.item())
+                # Step 4. Compute the loss, gradients, and update the parameters by
+                # calling optimizer.step()
+        print("printing the last val prediction")
+        sentence = sentence[0, :]
+        tags = tags[0, :]
+        _sentence, _tags = train_dataset.decode_sentence(sentence, tags)
+        print("true sentence:")
+        print(_sentence)
+        print("true tags:")
+        print(_tags)
+        print("predicted tags:")
+        model(sentence.repeat(8, 1))  # reapeating it so that it doesnt piss off our lstm
+    test_loss = np.mean(test_loss)
+
+
+    print("THE TEST LOSS WAS: ", test_loss)
+
 
 # We got it!'''
