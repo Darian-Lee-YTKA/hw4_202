@@ -87,7 +87,7 @@ class BiLSTM_CRF(nn.Module):
         return char_features
 
 
-    def _forward_alg(self, feats):
+    def _forward_alg(self, feats, get_all_scores = False):
         #print("inside forward algo")
         # Do the forward algorithm to compute the partition function
         init_alphas = torch.full((self.batch_size, self.tagset_size), -10000.)
@@ -165,7 +165,10 @@ class BiLSTM_CRF(nn.Module):
         alpha = log_sum_exp(terminal_var)
         #print("FINAL ALPHA: ")
         #print(alpha.view(1, -1).squeeze()) # batch size, 1
-        return alpha.view(1, -1).squeeze()  # gets the probability for the sentence given ALL the tag pats
+        if get_all_scores:
+            return terminal_var
+        else:
+            return alpha.view(1, -1).squeeze()  # gets the probability for the sentence given ALL the tag pats
 
     def _get_lstm_features(self, batch, chars):
 
@@ -213,6 +216,16 @@ class BiLSTM_CRF(nn.Module):
         #print("final score: ", score)
 
         return score
+
+    def _get_hamming_score(self, feats, tags):
+        best_path = self._viterbi_decode(feats)
+        mask = tags != 0
+
+        total = mask.sum().item()
+        incorrect = (best_path != tags) & mask
+
+        hamming_loss = incorrect.sum().item() / total if total > 0 else 0.0
+        return hamming_loss
 
     def _viterbi_decode(self, feats):
         #print("\n\n😏😏======== BEGINNING VITERBI ==========😏😏")
@@ -312,7 +325,7 @@ class BiLSTM_CRF(nn.Module):
             decoded_path.append(decoded_tags)
 
         # Print the decoded paths
-        print("Decoded best path: ", decoded_path[0])
+        #print("Decoded best path: ", decoded_path[0])
 
 
 
@@ -329,6 +342,94 @@ class BiLSTM_CRF(nn.Module):
         #print(per_seq_score.shape)
         #print(sum(per_seq_score))
         return sum(per_seq_score)
+
+    def _ramp_loss(self, sentence, chars, tags):
+
+        feats = self._get_lstm_features(sentence, chars)
+
+        mask = tags != 0  # shape: [batch_size, seq_len]
+
+        # terminal scores from forward algorithm
+        terminal_scores = self._forward_alg(feats, get_all_scores=True)  # shape: [batch_size, num_tags]
+
+        # best sequence
+        best_path_score, best_path = self._viterbi_decode(feats)  # shape: [batch_size, seq_len]
+
+
+        # get hamming ignoring padding positions
+        hamming_loss = self._get_hamming_score(feats, tags)  # shape: [batch_size]
+
+
+        worst_violation_scores = terminal_scores + hamming_loss # add the hamming cost to each path probability
+        worst_path_score = worst_violation_scores.max(dim=1)[0]  # get the highest probability path
+
+        # get the ramp loss
+        loss = -best_path_score + worst_path_score
+
+        # get rid of the padded tokens
+        loss = loss * mask.any(dim=1)
+
+        return loss.mean()  # average over batch
+
+
+    def add_batch_predictions_to_export_file(self, sentence, chars, export_file_path):
+
+            feats = self._get_lstm_features(sentence, chars)
+
+            path_score, best_path = self._viterbi_decode(feats)  # shape: [batch_size, seq_len]
+
+            print(best_path.shape)
+
+
+            flattened_predictions = best_path.reshape(-1, 1)  # shape: [batch_size * seq_len, 1]
+
+
+            df_predictions = pd.DataFrame(flattened_predictions.cpu().numpy(), columns=["Predictions"])
+            print(len(df_predictions))
+
+            df_predictions.to_csv(export_file_path, mode='a', header=False, index=False)
+
+            print(f"Batch predictions added to {export_file_path}")
+
+    def add_true_y_to_export_file(self, tags, export_file_path):
+
+
+            print(tags.shape)
+            flattened_trues= tags.reshape(-1, 1)  # shape: [batch_size * seq_len, 1]
+
+            df_predictions = pd.DataFrame(flattened_trues.cpu().numpy(), columns=["Predictions"])
+            print(len(df_predictions))
+
+
+            df_predictions.to_csv(export_file_path, mode='a', header=False, index=False)
+
+            print(f"Batch predictions added to {export_file_path}")
+
+    def _svm_loss(self, sentence, chars, tags):
+
+        feats = self._get_lstm_features(sentence, chars)  # [batch_size, seq_len, num_tags]
+
+        mask = tags != 0  # [batch_size, seq_len] (mask padded positions)
+
+
+        gold_score = self._score_sentence(feats, tags)  # [batch_size]
+
+        # gets the terminal scores from forward algorithm (ending prob of each path)
+        terminal_scores = self._forward_alg(feats, get_all_scores=True)  # [batch_size, num_tags]
+
+        # get the hamming cost (ignoring padding)
+        hamming_loss = self._get_hamming_score(feats, tags)
+
+        # get the max probability with the hamming loss
+        max_margin_violation = (terminal_scores + hamming_loss).max(dim=1)[0]  # [batch_size]
+
+        # SVM loss
+        loss = max_margin_violation - gold_score
+
+        # mask where the true tags  are 0)
+        loss = loss * mask.any(dim=1).float()
+
+        return loss.mean()  # averaging over batch
 
     def forward(self, sentence, chars):  # dont confuse this with _forward_alg above.
         # Get the emission scores from the BiLSTM
@@ -477,9 +578,14 @@ class IOBDataset(Dataset):
         self.inverse_tag_vocab = {value: key for (key, value) in tag_vocab.items()}
 
     def encode_data(self, df):
+        counter = 0
 
 
         for row in df.itertuples():
+            if counter == 4000:
+                break
+            else:
+                counter +=1
 
 
 
@@ -689,7 +795,19 @@ test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, col
 model = BiLSTM_CRF(len(train_dataset.vocab), train_dataset.tag_vocab, EMBEDDING_DIM, HIDDEN_DIM, 8, char_vocab_dim=len(train_dataset.char_vocab))
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
 
-# Check predictions before training
+
+import os
+
+base_dir = os.getcwd()
+
+folder = os.path.join(base_dir, "ramp_loss")
+
+os.makedirs(folder, exist_ok=True)
+
+val_file = os.path.join(folder, "val_predictions.csv")
+test_file = os.path.join(folder, "test_predictions.csv")
+val_file_true = os.path.join(folder, "val_true.csv")
+test_file_true = os.path.join(folder, "test_true.csv")
 
 '''with torch.no_grad():
     print("we are doing precheck")
@@ -702,7 +820,7 @@ optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
 print(len(train_loader))
 best_val_loss = float("inf")
 best_model = None
-for epoch in range(15):
+for epoch in range(6):
     print("STARTING EPOCH: ", epoch)
     epoch_loss = []
     for batch in train_loader:
@@ -718,7 +836,7 @@ for epoch in range(15):
                 model.zero_grad()
 
 
-                loss = model.neg_log_likelihood(sentence, chars, tags)
+                loss = model._ramp_loss(sentence, chars, tags)
 
                 epoch_loss.append(loss.item())
                 # Step 4. Compute the loss, gradients, and update the parameters by
@@ -756,7 +874,7 @@ for epoch in range(15):
                 model.zero_grad()
 
 
-                loss = model.neg_log_likelihood(sentence, chars, tags)
+                loss = model._ramp_loss(sentence, chars, tags)
 
                 val_loss.append(loss.item())
                 # Step 4. Compute the loss, gradients, and update the parameters by
@@ -804,16 +922,36 @@ if 5 > 2: # do not want to have to undo all the indents
                 model.zero_grad()
 
 
-                loss = model.neg_log_likelihood(sentence, chars, tags)
-
+                loss = model._ramp_loss(sentence, chars, tags)
+                model.add_batch_predictions_to_export_file(sentence, chars, test_file)
+                model.add_true_y_to_export_file(tags, test_file_true)
                 test_loss.append(loss.item())
                 # Step 4. Compute the loss, gradients, and update the parameters by
                 # calling optimizer.step()
 
     test_loss = np.mean(test_loss)
-
-
     print("THE TEST LOSS WAS: ", test_loss)
 
+    val_loss = []
+    model.eval()
+    with torch.no_grad():
+        for batch in dev_loader:
+            sentence, chars, tags = batch
+            if sentence.shape[0] != 8:
+                continue
+            else:
+                # print("shape of sentence and tag in the loop")
+                # print(sentence.shape)
+                # print(tags.shape)
+                # Step 1. Remember that Pytorch accumulates gradients.
+                # We need to clear them out before each instance
+                model.zero_grad()
 
-# We got it!'''
+                loss = model._ramp_loss(sentence, chars, tags)
+                model.add_batch_predictions_to_export_file(sentence, chars, val_file)
+                model.add_true_y_to_export_file(tags, val_file_true)
+                val_loss.append(loss.item())
+                # Step 4. Compute the loss, gradients, and update the parameters by
+                # calling optimizer.step()
+
+    val_loss = np.mean(val_loss)
