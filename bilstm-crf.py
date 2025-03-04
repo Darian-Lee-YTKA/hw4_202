@@ -7,6 +7,7 @@ torch.manual_seed(12)
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 import numpy as np
+
 def argmax(vec):
     # return the argmax as a python int
     _, idx = torch.max(vec, 1)
@@ -32,7 +33,7 @@ def log_sum_exp(vec):
     return (max_score.squeeze(-1) + torch.log(torch.sum(torch.exp(vec - max_score_broadcast), dim=-1))).unsqueeze(-1)
 class BiLSTM_CRF(nn.Module):
 
-    def __init__(self, vocab_size, tag_to_ix, embedding_dim, hidden_dim, batch_size):
+    def __init__(self, vocab_size, tag_to_ix, embedding_dim, hidden_dim, batch_size, char_vocab_dim):
         super(BiLSTM_CRF, self).__init__()
         self.embedding_dim = embedding_dim
         self.hidden_dim = hidden_dim
@@ -41,7 +42,9 @@ class BiLSTM_CRF(nn.Module):
         self.tagset_size = len(tag_to_ix)
         self.batch_size = batch_size
 
-        self.word_embeds = nn.Embedding(vocab_size, embedding_dim) # normal word embed
+        self.char_embed_model = Character_CNN(char_vocab_dim)
+
+        self.word_embeds = nn.Embedding(vocab_size, embedding_dim, padding_idx=0) # normal word embed
         self.lstm = nn.LSTM(embedding_dim, hidden_dim // 2,
                             num_layers=1, bidirectional=True, batch_first = True, dropout= .4) # normal bilstm with batch false
         # the input shape will be seq_len, batchsize, embed dim
@@ -65,6 +68,24 @@ class BiLSTM_CRF(nn.Module):
     def init_hidden(self):
         return (torch.randn(2, self.batch_size, self.hidden_dim // 2),
                 torch.randn(2, self.batch_size, self.hidden_dim // 2)) # intialize for random weights. Independent of batching
+
+
+
+
+    def forward(self, char_embeds):
+        """
+        char_embeds: (batch, word_len, char_embedding_dim)
+        """
+        char_embeds = char_embeds.permute(0, 2, 1)  # (batch, char_embedding_dim, word_len) для Conv1d
+        conv_out = self.conv1d(char_embeds)  # Применяем свертку
+        conv_out = self.relu(conv_out)  # Активация
+        pooled_out = self.pool(conv_out)  # Применяем макспулинг
+
+        # Агрегация: берем max по последней оси, чтобы получить фиксированный вектор на слово
+        char_features = torch.max(pooled_out, dim=-1)[0]  # (batch, cnn_output_dim)
+
+        return char_features
+
 
     def _forward_alg(self, feats):
         #print("inside forward algo")
@@ -146,11 +167,15 @@ class BiLSTM_CRF(nn.Module):
         #print(alpha.view(1, -1).squeeze()) # batch size, 1
         return alpha.view(1, -1).squeeze()  # gets the probability for the sentence given ALL the tag pats
 
-    def _get_lstm_features(self, batch):
+    def _get_lstm_features(self, batch, chars):
+
+        char_embeds = self.char_embed_model(chars)
+
 
         #print("batch.shape: ", batch.shape)
         self.hidden = self.init_hidden()
         embeds = self.word_embeds(batch)
+        embeds = embeds + char_embeds
         #print("embeds.shape: ", embeds.shape)
         # self.word_embeds(sentence) = batch_size, seq_length,embedding_dim
 
@@ -295,8 +320,8 @@ class BiLSTM_CRF(nn.Module):
 
         return path_score, best_path
 
-    def neg_log_likelihood(self, sentence, tags):
-        feats = self._get_lstm_features(sentence)
+    def neg_log_likelihood(self, sentence, chars, tags):
+        feats = self._get_lstm_features(sentence, chars)
         forward_score = self._forward_alg(feats)
         gold_score = self._score_sentence(feats, tags)
         per_seq_score = forward_score - gold_score
@@ -305,9 +330,9 @@ class BiLSTM_CRF(nn.Module):
         #print(sum(per_seq_score))
         return sum(per_seq_score)
 
-    def forward(self, sentence):  # dont confuse this with _forward_alg above.
+    def forward(self, sentence, chars):  # dont confuse this with _forward_alg above.
         # Get the emission scores from the BiLSTM
-        lstm_feats = self._get_lstm_features(sentence)
+        lstm_feats = self._get_lstm_features(sentence, chars)
 
         # Find the best path, given the features.
         score, tag_seq = self._viterbi_decode(lstm_feats)
@@ -319,6 +344,48 @@ EMBEDDING_DIM = 32
 HIDDEN_DIM = 32
 
 
+class Character_CNN(nn.Module):
+    def __init__(self, char_vocab_size):
+        super(Character_CNN, self).__init__()
+
+        self.char_embedding = nn.Embedding(char_vocab_size, 64, padding_idx=0)
+
+
+        self.conv1d = nn.Conv1d(in_channels=64,
+                                out_channels=32,
+                                kernel_size=3,
+                                padding=1)
+
+        self.relu = nn.ReLU()
+
+    def forward(self, char_inputs):
+        # char_inputs - (batch_size, word_seq_len, char_seq_len)
+        char_inputs = char_inputs.long()
+        #print("char_inputs.shape")
+
+        #print(char_inputs.shape)
+        batch_size, word_seq_len, char_seq_len = char_inputs.shape
+
+
+        char_embeds = self.char_embedding(char_inputs)  # (batch_size, word_seq_len, char_seq_len, char_embedding_dim)
+
+        # changing the dimensions for convolution
+        char_embeds = char_embeds.permute(0, 3, 1, 2)  # (batch_size, char_embedding_dim, word_seq_len, char_seq_len)
+        #print("char_embeds.shape after permute:", char_embeds.shape)
+
+
+        conv_out = self.conv1d(char_embeds.reshape(batch_size * word_seq_len, 64, char_seq_len))  # (batch_size * word_seq_len, 32, new_char_seq_len)
+        conv_out = self.relu(conv_out)
+        #print("conv_out.shape after conv1d:", conv_out.shape)
+
+        # put it back to the old dim
+        conv_out = conv_out.view(batch_size, word_seq_len, 32, -1)  # (batch_size, word_seq_len, 32, new_char_seq_len)
+
+        # max pool on the characters in the word
+        char_features = torch.max(conv_out, dim=-1)[0]  # (batch_size, word_seq_len, 32)
+        #print("char_features.shape:", char_features.shape)
+
+        return char_features
 
 
 def get_data_from_iob(path):
@@ -368,10 +435,12 @@ class IOBDataset(Dataset):
         self.vocab = {"PAD": 0, "UNK": 1}
         self.tag_vocab = {"PAD": 0, "UNK": 1, "<START>": 2, "<STOP>": 3}
         self.x = []
+        self.x_char = [] # for our character embeddings
         self.y = []
+
         self.inverse_vocab = {}
         self.inverse_tag_vocab = {}
-        self.char_vocab = {}
+        self.char_vocab = {"PAD": 0, "UNK": 1, "_": 2}
         self.test_sentence = None # stores a batch of 8 test sentences for debugging
         self.test_tags = None
     def build_vocab(self, df):
@@ -407,7 +476,6 @@ class IOBDataset(Dataset):
         self.tag_vocab = tag_vocab
         self.inverse_tag_vocab = {value: key for (key, value) in tag_vocab.items()}
 
-
     def encode_data(self, df):
 
 
@@ -415,27 +483,57 @@ class IOBDataset(Dataset):
 
 
 
-
             row_x = []
+            row_x_char = []
             row_y = []
+
+
+            max_char_len = 0
             for token in row.tokens:
+                max_char_len = max(max_char_len, len(token))
+
+            for token in row.tokens:
+                token_char = []
                 row_x.append(self.vocab.get(token, 1))
+
+
+                for char in token:
+                    token_char.append(self.char_vocab.get(char, 1))
+
+
+                token_char.extend([self.char_vocab.get('<PAD>', 0)] * (
+                            max_char_len - len(token_char)))
+
+                row_x_char.append(torch.tensor(token_char))
+
             for tag in row.tags:
                 row_y.append(self.tag_vocab.get(tag, 1))
+
+
             self.x.append(torch.tensor(row_x))
+            self.x_char.append(torch.stack(
+                row_x_char))
             self.y.append(torch.tensor(row_y))
 
         test_sentence = ["CD28", "activity", "is", "useful"]
+
         test_tags = ["B-protein", "O", "O", "O"]
         sen = []
+        sen_chars = []
         tag = []
         for token in test_sentence:
             sen.append(self.vocab.get(token, 1))
+
+            for char in token:
+                sen_chars.append(self.char_vocab.get(char, 1))
+
         for token in test_tags:
             tag.append(self.tag_vocab.get(token, 1))
         sen_tensor = torch.tensor(sen, dtype=torch.long)
+        char_tensor = torch.tensor(sen_chars, dtype=torch.long)
         tag_tensor = torch.tensor(tag, dtype=torch.long)
         self.test_sentence = sen_tensor.unsqueeze(0).repeat(8, 1)  # (8, len(sen))
+        self.test_chars = char_tensor.unsqueeze(0).repeat(8,1)
         self.test_tags = tag_tensor.unsqueeze(0).repeat(8, 1)
 
 
@@ -483,7 +581,7 @@ class IOBDataset(Dataset):
 
     def __getitem__(self, idx):
 
-        return self.x[idx], self.y[idx]
+        return self.x[idx], self.x_char[idx], self.y[idx]
 
 
 train_dataset = IOBDataset()
@@ -505,21 +603,81 @@ test_dataset.check_work(500)
 batch_size = 8
 
 import torch.nn.functional as F
+
+
 def collate_fn(batch):
+    inputs, char_inputs, labels = zip(*batch)
+    # char input is a tuple with 8 elements each representing a seq in the batch
+    #print(char_inputs[0].shape) # the tensors inside the tuple have shape [seq_len, character_len)
+    # character len has been padded per sentence, but not per batch
+    #print(char_inputs[1].shape)
+    #print(char_inputs[2].shape)
+    #print(char_inputs[3].shape)
+    #print(char_inputs[4].shape)
+    #print(char_inputs[5].shape)
+    #print(char_inputs[6].shape)
+    #print(char_inputs[7].shape)
 
-    inputs, labels = zip(*batch) # both are a list of torch tensors
 
 
+    # the max characters in a word
     max_len = max(seq.shape[0] for seq in inputs)
+    max_char_len_per_word = max(
+        max(word.shape[0] for word in seq) if len(seq) > 0 else 0
+        for seq in char_inputs
+    )
+    #print("max_char_len_per_word:", max_char_len_per_word)
 
+    # normal pad for words
     padded_inputs = torch.stack([F.pad(seq, (0, max_len - seq.shape[0]), value=0) for seq in inputs])
 
+    # normal pad for tags
     labels = torch.stack([F.pad(seq, (0, max_len - seq.shape[0]), value=0) for seq in labels])
 
+    # word level padding for character inputs
+
+    #print("\n\nstarting to pad the characters to be the batch max")
+    batched_chars = []
+    for seq in char_inputs:
+        #print("\n\n ☘️☘️ starting new seq")
+        padded_words = []
+        for word in seq:
+
+            if word.shape[0] < max_char_len_per_word:
+                padding_size = max_char_len_per_word - word.shape[0]  # the difference between itself and the max char len
+                padding = torch.zeros(padding_size)  # creates the vector of 0s to concat
+                padded_word = torch.cat([word, padding], dim=0)
+            else:
+                padded_word = word
+
+            padded_words.append(padded_word)
+        new_seq = torch.stack(padded_words)
+        #print("🥭🥭old_seq_shape: ", seq.shape)
+        #print("🥭🥭new_seq.shape: ", new_seq.shape)
+
+
+        # nice! now are characters are padded. Now we just need to pad along batch
+        full_pad_word = torch.zeros(max_char_len_per_word) # for when we need to add words full of just pad chars
+        if new_seq.shape[0] < max_len: # if the number of words in the seq is less than the total number of words
+            amount_of_zero_rows_to_add = max_len - new_seq.shape[0]
+            zero_rows = torch.stack(
+                [full_pad_word for _ in range(amount_of_zero_rows_to_add)])  # make the 0 tensor
+
+            padded_seq = torch.cat([new_seq, zero_rows], dim=0)  # add the 0 rows along the sequence dim
+            #print("old shape: ", new_seq.shape)
+            #print("padded_seq shape:", padded_seq.shape)
+        else:
+            padded_seq = new_seq
+        batched_chars.append(padded_seq)
 
 
 
-    return padded_inputs, labels
+
+    padded_char_inputs = torch.stack(batched_chars)
+
+    #print("padded_char_inputs.shape: ", padded_char_inputs.shape)
+    return padded_inputs, padded_char_inputs, labels
+
 print("number of x and y")
 print(len(train_dataset.x))
 print(len(train_dataset.y))
@@ -528,24 +686,27 @@ train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, co
 dev_loader = DataLoader(dev_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
 test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
 
-model = BiLSTM_CRF(len(train_dataset.vocab), train_dataset.tag_vocab, EMBEDDING_DIM, HIDDEN_DIM, 8)
+model = BiLSTM_CRF(len(train_dataset.vocab), train_dataset.tag_vocab, EMBEDDING_DIM, HIDDEN_DIM, 8, char_vocab_dim=len(train_dataset.char_vocab))
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
 
 # Check predictions before training
 
-with torch.no_grad():
+'''with torch.no_grad():
     print("we are doing precheck")
     precheck_sent = train_dataset.test_sentence
+    precheck_chars = train_dataset.test_chars
     print(precheck_sent)
-    print(model(precheck_sent))
+    print(model(precheck_sent, precheck_chars))'''
 
 # Make sure prepare_sequence from earlier in the LSTM section is loaded
 print(len(train_loader))
-for epoch in range(6):
+best_val_loss = float("inf")
+best_model = None
+for epoch in range(15):
     print("STARTING EPOCH: ", epoch)
     epoch_loss = []
     for batch in train_loader:
-            sentence, tags = batch
+            sentence, chars, tags = batch
             if sentence.shape[0] != 8:
                 continue
             else:
@@ -557,7 +718,7 @@ for epoch in range(6):
                 model.zero_grad()
 
 
-                loss = model.neg_log_likelihood(sentence, tags)
+                loss = model.neg_log_likelihood(sentence, chars, tags)
 
                 epoch_loss.append(loss.item())
                 # Step 4. Compute the loss, gradients, and update the parameters by
@@ -568,13 +729,14 @@ for epoch in range(6):
     print("printing the last train prediction of batch")
     sentence = sentence[0, :]
     tags = tags[0, :]
+    chars = chars[0, :]
     _sentence, _tags = train_dataset.decode_sentence(sentence, tags)
     print("true sentence:")
     print(_sentence)
     print("true tags:")
     print(_tags)
     print("predicted tags:")
-    model(sentence.repeat(8, 1)) # reapeating it so that it doesnt piss off our lstm
+    model(sentence.repeat(8, 1), chars.repeat(8,1, 1)) # reapeating it so that it doesnt piss off our lstm'''
     epoch_loss = np.mean(epoch_loss)
     print("THE EPOCH LOSS WAS: ", epoch_loss)
 
@@ -582,7 +744,7 @@ for epoch in range(6):
     model.eval()
     with torch.no_grad():
         for batch in dev_loader:
-            sentence, tags = batch
+            sentence, chars, tags = batch
             if sentence.shape[0] != 8:
                 continue
             else:
@@ -594,22 +756,27 @@ for epoch in range(6):
                 model.zero_grad()
 
 
-                loss = model.neg_log_likelihood(sentence, tags)
+                loss = model.neg_log_likelihood(sentence, chars, tags)
 
                 val_loss.append(loss.item())
                 # Step 4. Compute the loss, gradients, and update the parameters by
                 # calling optimizer.step()
-        print("printing the last val prediction")
-        sentence = sentence[0, :]
-        tags = tags[0, :]
-        _sentence, _tags = train_dataset.decode_sentence(sentence, tags)
-        print("true sentence:")
-        print(_sentence)
-        print("true tags:")
-        print(_tags)
-        print("predicted tags:")
-        model(sentence.repeat(8, 1))  # reapeating it so that it doesnt piss off our lstm
+    print("printing the last val prediction")
+    sentence = sentence[0, :]
+    tags = tags[0, :]
+    chars = chars[0, :]
+    _sentence, _tags = train_dataset.decode_sentence(sentence, tags)
+    print("true sentence:")
+    print(_sentence)
+    print("true tags:")
+    print(_tags)
+    print("predicted tags:")
+    model(sentence.repeat(8, 1), chars.repeat(8, 1, 1))  # reapeating it so that it doesnt piss off our lstm'''
+
     val_loss = np.mean(val_loss)
+    if val_loss < best_val_loss:
+        best_val_loss = val_loss
+        best_model = model.state_dict()
 
 
     print("THE VAL LOSS WAS: ", val_loss)
@@ -619,19 +786,13 @@ for epoch in range(6):
 
 print("training done!")
 
-with torch.no_grad():
-    print("we are doing precheck")
-    precheck_sent = train_dataset.test_sentence
-    print(precheck_sent)
-    print(model(precheck_sent))
-# Check predictions after training
-
-if 5 > 2: # don not want to have to undo all the indents
+model.load_state_dict(best_model)
+if 5 > 2: # do not want to have to undo all the indents
     test_loss = []
     model.eval()
     with torch.no_grad():
         for batch in test_loader:
-            sentence, tags = batch
+            sentence, chars, tags = batch
             if sentence.shape[0] != 8:
                 continue
             else:
@@ -643,21 +804,12 @@ if 5 > 2: # don not want to have to undo all the indents
                 model.zero_grad()
 
 
-                loss = model.neg_log_likelihood(sentence, tags)
+                loss = model.neg_log_likelihood(sentence, chars, tags)
 
                 test_loss.append(loss.item())
                 # Step 4. Compute the loss, gradients, and update the parameters by
                 # calling optimizer.step()
-        print("printing the last val prediction")
-        sentence = sentence[0, :]
-        tags = tags[0, :]
-        _sentence, _tags = train_dataset.decode_sentence(sentence, tags)
-        print("true sentence:")
-        print(_sentence)
-        print("true tags:")
-        print(_tags)
-        print("predicted tags:")
-        model(sentence.repeat(8, 1))  # reapeating it so that it doesnt piss off our lstm
+
     test_loss = np.mean(test_loss)
 
 
